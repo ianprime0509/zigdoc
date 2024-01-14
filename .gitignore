@@ -1,0 +1,7 @@
+zig-cache
+zig-out
+
+static/std
+static/std.tar.gz
+
+*.wasm

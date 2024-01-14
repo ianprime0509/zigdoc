@@ -40,8 +40,21 @@ const mod = await execute({
 });
 console.log(mod);
 
-console.log(await execute({ method: "fileSource", params: { mod, file: 0 } }));
+const file = await execute({ method: "rootFile", params: { mod } });
+
+console.log(await execute({ method: "fileSource", params: { mod, file } }));
+
+const decl = await execute({ method: "rootDecl", params: { mod, file } });
+
+console.log(await execute({ method: "declChildren", params: { mod, decl } }));
+
+const mem = await execute({
+  method: "declChild",
+  params: { mod, decl, name: "mem" },
+});
+
+console.log(mem);
 
 console.log(
-  await execute({ method: "declChildren", params: { mod, decl: 0 } }),
+  await execute({ method: "declChildren", params: { mod, decl: mem } }),
 );

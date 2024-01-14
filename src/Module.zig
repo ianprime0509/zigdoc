@@ -5,6 +5,7 @@ const Ast = std.zig.Ast;
 const assert = std.debug.assert;
 
 files: File.List.Slice,
+root_file: File.Index,
 decls: Decl.List.Slice,
 extra: []u32,
 
@@ -36,7 +37,7 @@ pub fn deinit(mod: *Module, allocator: Allocator) void {
     mod.* = undefined;
 }
 
-pub const ExtraIndex = enum(u32) { none = std.math.maxInt(u32), _ };
+pub const OptionalExtraIndex = enum(u32) { none = std.math.maxInt(u32), _ };
 
 pub const File = struct {
     status: Status,
@@ -44,9 +45,9 @@ pub const File = struct {
     source: [:0]u8,
     ast: Ast,
     root_decl: Decl.Index,
-    imports: std.AutoHashMapUnmanaged(Ast.Node.Index, File),
+    imports: std.AutoHashMapUnmanaged(Ast.Node.Index, File.Index),
 
-    pub const Index = enum(u32) { root = 0, _ };
+    pub const Index = enum(u32) { _ };
     pub const List = std.MultiArrayList(File);
 
     pub const Status = enum {
@@ -62,10 +63,13 @@ pub fn filePath(mod: Module, file: File.Index) []const u8 {
 
 pub const Decl = struct {
     file: File.Index,
+    /// The parent (container) of the decl. The root decl has itself as its
+    /// parent.
+    parent: Decl.Index,
     node: Ast.Node.Index,
     /// If the decl is a container, this will be a length `n` followed by `n`
     /// `Decl.Index`es for the children.
-    children: ExtraIndex,
+    children: OptionalExtraIndex,
 
     pub const Index = enum(u32) { root = 0, _ };
     pub const List = std.MultiArrayList(Decl);
@@ -77,6 +81,36 @@ pub const Decl = struct {
         function,
     };
 };
+
+pub fn declPublic(mod: Module, decl: Decl.Index) bool {
+    const file = mod.decls.items(.file)[@intFromEnum(decl)];
+    const ast = mod.files.items(.ast)[@intFromEnum(file)];
+    const node = mod.decls.items(.node)[@intFromEnum(decl)];
+    switch (ast.nodes.items(.tag)[node]) {
+        .root => return true,
+        .global_var_decl,
+        .local_var_decl,
+        .simple_var_decl,
+        .aligned_var_decl,
+        => {
+            const var_decl = ast.fullVarDecl(node).?;
+            const visib_token = var_decl.visib_token orelse return false;
+            return ast.tokens.items(.tag)[visib_token] == .keyword_pub;
+        },
+        .fn_proto_simple,
+        .fn_proto_multi,
+        .fn_proto_one,
+        .fn_proto,
+        .fn_decl,
+        => {
+            var buf: [1]Ast.Node.Index = undefined;
+            const fn_proto = ast.fullFnProto(&buf, node).?;
+            const visib_token = fn_proto.visib_token orelse return false;
+            return ast.tokens.items(.tag)[visib_token] == .keyword_pub;
+        },
+        else => unreachable,
+    }
+}
 
 pub fn declType(mod: Module, decl: Decl.Index) Decl.Type {
     const file = mod.decls.items(.file)[@intFromEnum(decl)];
@@ -143,9 +177,38 @@ pub fn declChildren(mod: Module, decl: Decl.Index) []const Decl.Index {
     return @ptrCast(mod.extra[@intFromEnum(children) + 1 ..][0..len]);
 }
 
+pub fn declChild(mod: Module, decl: Decl.Index, name: []const u8) ?Decl.Index {
+    const file = mod.decls.items(.file)[@intFromEnum(decl)];
+    const ast = mod.files.items(.ast)[@intFromEnum(file)];
+    const children = mod.declChildren(decl);
+
+    const Context = struct { ast: Ast, decls: Decl.List.Slice };
+    const index = std.sort.binarySearch(Decl.Index, name, children, Context{ .ast = ast, .decls = mod.decls }, struct {
+        fn order(ctx: Context, key: []const u8, mid_item: Decl.Index) std.math.Order {
+            const nodes = ctx.decls.items(.node);
+            const mid_name = nodeIdentifier(ctx.ast, nodes[@intFromEnum(mid_item)]) orelse return .lt;
+            // TODO: consider quoted identifiers
+            return mem.order(u8, key, mid_name);
+        }
+    }.order) orelse return null;
+    return children[index];
+}
+
+pub fn declResolve(mod: Module, decl: Decl.Index, name: []const u8) ?Decl.Index {
+    const parents = mod.decls.items(.parent);
+    var current_decl = decl;
+    while (true) {
+        if (mod.declChild(current_decl, name)) |child| return child;
+        const parent = parents[@intFromEnum(decl)];
+        if (parent == current_decl) return null;
+        current_decl = parent;
+    }
+}
+
 const Wip = struct {
     files: File.List = .{},
     files_by_path: std.StringHashMapUnmanaged(File.Index) = .{},
+    root_file: File.Index = undefined,
     decls: Decl.List = .{},
     extra: std.ArrayListUnmanaged(u32) = .{},
     scratch: std.ArrayListUnmanaged(u32) = .{},
@@ -170,6 +233,7 @@ const Wip = struct {
     fn finish(mod: *Wip) !Module {
         return .{
             .files = mod.files.toOwnedSlice(),
+            .root_file = mod.root_file,
             .decls = mod.decls.toOwnedSlice(),
             .extra = try mod.extra.toOwnedSlice(mod.allocator),
         };
@@ -213,15 +277,7 @@ const Wip = struct {
             }
         }
 
-        // The root file must have index 0.
-        const root_file_index = mod.files_by_path.get(root_path) orelse return error.InvalidRootPath;
-        if (root_file_index != .root) {
-            const old_root_file = mod.files.get(0);
-            mod.files.set(0, mod.files.get(@intFromEnum(root_file_index)));
-            mod.files.set(@intFromEnum(root_file_index), old_root_file);
-            mod.files_by_path.getEntry(root_path).?.value_ptr.* = .root;
-            mod.files_by_path.getEntry(old_root_file.path).?.value_ptr.* = root_file_index;
-        }
+        mod.root_file = mod.files_by_path.get(root_path) orelse return error.InvalidRootPath;
     }
 
     pub fn parseFile(mod: *Wip, file: File.Index) !void {
@@ -236,18 +292,56 @@ const Wip = struct {
         if (ast.errors.len != 0) return;
 
         mod.files.items(.ast)[@intFromEnum(file)] = ast;
-        _ = try mod.processNode(file, 0);
+        try mod.processImports(file);
+        _ = try mod.processDecl(file, undefined, 0);
 
         status.* = .parsed;
     }
 
-    fn processNode(mod: *Wip, file: File.Index, node: Ast.Node.Index) !?Decl.Index {
+    fn processImports(mod: *Wip, file: File.Index) !void {
+        const file_path = mod.files.items(.path)[@intFromEnum(file)];
+        const ast = mod.files.items(.ast)[@intFromEnum(file)];
+        const tags = ast.nodes.items(.tag);
+        const main_tokens = ast.nodes.items(.main_token);
+        const datas = ast.nodes.items(.data);
+        const imports = &mod.files.items(.imports)[@intFromEnum(file)];
+        for (tags, 0..) |tag, i| {
+            switch (tag) {
+                .builtin_call_two, .builtin_call_two_comma => {
+                    const builtin_name = ast.tokenSlice(main_tokens[i]);
+                    if (!mem.eql(u8, builtin_name, "@import")) continue;
+                    if (datas[i].lhs == 0 or datas[i].rhs != 0) continue;
+                    if (tags[datas[i].lhs] != .string_literal) continue;
+                    const import_path_raw = ast.tokenSlice(main_tokens[datas[i].lhs]);
+                    const import_path = std.zig.string_literal.parseAlloc(mod.allocator, import_path_raw) catch |err| switch (err) {
+                        error.OutOfMemory => return error.OutOfMemory,
+                        error.InvalidLiteral => continue,
+                    };
+                    defer mod.allocator.free(import_path);
+                    const resolved_path = try std.fs.path.resolvePosix(mod.allocator, &.{ file_path, "..", import_path });
+                    defer mod.allocator.free(resolved_path);
+                    if (mod.files_by_path.get(resolved_path)) |imported_file| {
+                        try imports.put(mod.allocator, @intCast(i), imported_file);
+                    }
+                },
+                else => {},
+            }
+        }
+    }
+
+    fn processDecl(
+        mod: *Wip,
+        file: File.Index,
+        parent: Decl.Index,
+        node: Ast.Node.Index,
+    ) !?Decl.Index {
         const ast = mod.files.items(.ast)[@intFromEnum(file)];
         switch (ast.nodes.items(.tag)[node]) {
             .root => {
                 assert(node == 0);
                 const index = try mod.appendDecl(.{
                     .file = file,
+                    .parent = @enumFromInt(@as(u32, @intCast(mod.decls.len))),
                     .node = node,
                     .children = undefined,
                 });
@@ -257,7 +351,7 @@ const Wip = struct {
                 defer mod.scratch.shrinkRetainingCapacity(scratch_top);
                 try mod.scratch.append(mod.allocator, undefined); // length
                 for (ast.rootDecls()) |child| {
-                    const decl_index = try mod.processNode(file, child) orelse continue;
+                    const decl_index = try mod.processDecl(file, index, child) orelse continue;
                     try mod.scratch.append(mod.allocator, @intFromEnum(decl_index));
                 }
                 mod.scratch.items[scratch_top] = @intCast(mod.scratch.items.len - scratch_top - 1);
@@ -280,8 +374,9 @@ const Wip = struct {
 
                 const index = try mod.appendDecl(.{
                     .file = file,
+                    .parent = parent,
                     .node = node,
-                    .children = undefined,
+                    .children = .none,
                 });
                 if (var_decl.ast.init_node == 0) return index;
 
@@ -291,7 +386,7 @@ const Wip = struct {
                     defer mod.scratch.shrinkRetainingCapacity(scratch_top);
                     try mod.scratch.append(mod.allocator, undefined); // length
                     for (container.ast.members) |member| {
-                        const child_index = try mod.processNode(file, member) orelse continue;
+                        const child_index = try mod.processDecl(file, index, member) orelse continue;
                         try mod.scratch.append(mod.allocator, @intFromEnum(child_index));
                     }
                     mod.scratch.items[scratch_top] = @intCast(mod.scratch.items.len - scratch_top - 1);
@@ -315,6 +410,7 @@ const Wip = struct {
 
                 return try mod.appendDecl(.{
                     .file = file,
+                    .parent = parent,
                     .node = node,
                     .children = .none,
                 });
@@ -344,8 +440,8 @@ const Wip = struct {
         }.lessThan);
     }
 
-    fn encodeScratch(mod: *Wip, scratch_top: usize) !ExtraIndex {
-        const index: ExtraIndex = @enumFromInt(@as(u32, @intCast(mod.extra.items.len)));
+    fn encodeScratch(mod: *Wip, scratch_top: usize) !OptionalExtraIndex {
+        const index: OptionalExtraIndex = @enumFromInt(@as(u32, @intCast(mod.extra.items.len)));
         try mod.extra.appendSlice(mod.allocator, mod.scratch.items[scratch_top..]);
         return index;
     }

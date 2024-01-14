@@ -28,6 +28,10 @@ var return_arena = std.heap.ArenaAllocator.init(allocator);
 var modules = std.ArrayList(Module).init(allocator);
 const ModuleIndex = enum(u32) { _ };
 
+/// A placeholder value used to indicate a missing index, when the return value
+/// of a function indicates an index.
+const missing_index = std.math.maxInt(i32);
+
 /// Ensures that the client memory is at least `new_size`.
 ///
 /// On success, returns the address of the new client memory divided by 2.
@@ -55,6 +59,15 @@ fn addModuleImpl(root_path: []const u8, source_tar_gz: []const u8) !ModuleIndex 
     errdefer mod.deinit(allocator);
     try modules.append(mod);
     return index;
+}
+
+export fn rootFile(mod: ModuleIndex) i32 {
+    return @intCast(@intFromEnum(modules.items[@intFromEnum(mod)].root_file));
+}
+
+export fn rootDecl(mod: ModuleIndex, file: Module.File.Index) i32 {
+    const m = modules.items[@intFromEnum(mod)];
+    return @intCast(@intFromEnum(m.files.items(.root_decl)[@intFromEnum(file)]));
 }
 
 export fn fileSource(
@@ -93,7 +106,10 @@ fn declChildrenImpl(mod: ModuleIndex, decl: Module.Decl.Index) ![]const u8 {
     var json_writer = std.json.writeStream(json.writer(), .{});
     try json_writer.beginArray();
     for (m.declChildren(decl)) |child| {
+        if (!m.declPublic(child)) continue;
         try json_writer.beginObject();
+        try json_writer.objectField("index");
+        try json_writer.write(@intFromEnum(child));
         try json_writer.objectField("type");
         try json_writer.write(m.declType(child));
         try json_writer.objectField("name");
@@ -103,6 +119,17 @@ fn declChildrenImpl(mod: ModuleIndex, decl: Module.Decl.Index) ![]const u8 {
     try json_writer.endArray();
 
     return try json.toOwnedSlice();
+}
+
+export fn declChild(
+    mod: ModuleIndex,
+    decl: Module.Decl.Index,
+    child_ptr: [*]const u8,
+    child_len: usize,
+) i32 {
+    const child = child_ptr[0..child_len];
+    const index = modules.items[@intFromEnum(mod)].declChild(decl, child) orelse return missing_index;
+    return @intCast(@intFromEnum(index));
 }
 
 /// Returns a negative error code corresponding to `err`.

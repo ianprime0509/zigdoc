@@ -96,6 +96,26 @@ const methods = {
     );
   },
 
+  rootFile({ mod }) {
+    return handle(wasm.rootFile(mod));
+  },
+
+  rootDecl({ mod, file }) {
+    return handle(wasm.rootDecl(mod, file));
+  },
+
+  fileSource({ mod, file }) {
+    const sourcePtr = new clientMemory.OutValue(4);
+    const sourceLen = new clientMemory.OutValue(4);
+    handle(
+      wasm.fileSource(mod, file, ...clientMemory.encode(sourcePtr, sourceLen)),
+    );
+    return clientMemory.readString(
+      clientMemory.readU32(sourcePtr),
+      clientMemory.readU32(sourceLen),
+    );
+  },
+
   declChildren({ mod, decl }) {
     const jsonPtr = new clientMemory.OutValue(4);
     const jsonLen = new clientMemory.OutValue(4);
@@ -110,16 +130,11 @@ const methods = {
     );
   },
 
-  fileSource({ mod, file }) {
-    const sourcePtr = new clientMemory.OutValue(4);
-    const sourceLen = new clientMemory.OutValue(4);
-    handle(
-      wasm.fileSource(mod, file, ...clientMemory.encode(sourcePtr, sourceLen)),
+  declChild({ mod, decl, name }) {
+    const index = handle(
+      wasm.declChild(mod, decl, ...clientMemory.encode(name)),
     );
-    return clientMemory.readString(
-      clientMemory.readU32(sourcePtr),
-      clientMemory.readU32(sourceLen),
-    );
+    return index === 0x7fff_ffff ? null : index;
   },
 };
 

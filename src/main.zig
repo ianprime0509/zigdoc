@@ -21,6 +21,10 @@ const allocator = std.heap.wasm_allocator;
 /// be returned in the positive range of an `i32`.
 var client_memory = std.ArrayListAligned(u8, 2).init(allocator);
 
+/// An arena for storing dynamically allocated return values. The memory stored
+/// here is only valid until the next call to any exported function.
+var return_arena = std.heap.ArenaAllocator.init(allocator);
+
 var modules = std.ArrayList(Module).init(allocator);
 const ModuleIndex = enum(u32) { _ };
 
@@ -66,6 +70,39 @@ export fn fileSource(
     source_ptr_out.* = source.ptr;
     source_len_out.* = source.len;
     return 0;
+}
+
+export fn declChildren(
+    mod: ModuleIndex,
+    decl: Module.Decl.Index,
+    json_ptr_out: *[*]const u8,
+    json_len_out: *usize,
+) i32 {
+    const json = declChildrenImpl(mod, decl) catch |err| return codeFromError(err);
+    json_ptr_out.* = json.ptr;
+    json_len_out.* = json.len;
+    return 0;
+}
+
+fn declChildrenImpl(mod: ModuleIndex, decl: Module.Decl.Index) ![]const u8 {
+    _ = return_arena.reset(.retain_capacity);
+    const m = modules.items[@intFromEnum(mod)];
+    var json = std.ArrayList(u8).init(return_arena.allocator());
+    defer json.deinit();
+
+    var json_writer = std.json.writeStream(json.writer(), .{});
+    try json_writer.beginArray();
+    for (m.declChildren(decl)) |child| {
+        try json_writer.beginObject();
+        try json_writer.objectField("type");
+        try json_writer.write(m.declType(child));
+        try json_writer.objectField("name");
+        try json_writer.write(m.declName(child));
+        try json_writer.endObject();
+    }
+    try json_writer.endArray();
+
+    return try json.toOwnedSlice();
 }
 
 /// Returns a negative error code corresponding to `err`.

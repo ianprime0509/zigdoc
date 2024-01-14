@@ -96,6 +96,20 @@ const methods = {
     );
   },
 
+  declChildren({ mod, decl }) {
+    const jsonPtr = new clientMemory.OutValue(4);
+    const jsonLen = new clientMemory.OutValue(4);
+    handle(
+      wasm.declChildren(mod, decl, ...clientMemory.encode(jsonPtr, jsonLen)),
+    );
+    return JSON.parse(
+      clientMemory.readString(
+        clientMemory.readU32(jsonPtr),
+        clientMemory.readU32(jsonLen),
+      ),
+    );
+  },
+
   fileSource({ mod, file }) {
     const sourcePtr = new clientMemory.OutValue(4);
     const sourceLen = new clientMemory.OutValue(4);

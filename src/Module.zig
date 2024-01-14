@@ -36,7 +36,7 @@ pub fn deinit(mod: *Module, allocator: Allocator) void {
     mod.* = undefined;
 }
 
-pub const ExtraIndex = enum(u32) { _ };
+pub const ExtraIndex = enum(u32) { none = std.math.maxInt(u32), _ };
 
 pub const File = struct {
     status: Status,
@@ -56,17 +56,91 @@ pub const File = struct {
     };
 };
 
+pub fn filePath(mod: Module, file: File.Index) []const u8 {
+    return mod.files.items(.path)[@intFromEnum(file)];
+}
+
 pub const Decl = struct {
     file: File.Index,
     node: Ast.Node.Index,
-    extra: ExtraIndex,
+    /// If the decl is a container, this will be a length `n` followed by `n`
+    /// `Decl.Index`es for the children.
+    children: ExtraIndex,
 
-    pub const Index = enum(u32) { _ };
+    pub const Index = enum(u32) { root = 0, _ };
     pub const List = std.MultiArrayList(Decl);
+
+    pub const Type = enum {
+        value,
+        namespace,
+        container,
+        function,
+    };
 };
 
-pub fn filePath(mod: Module, file: File.Index) []const u8 {
-    return mod.files.items(.path)[@intFromEnum(file)];
+pub fn declType(mod: Module, decl: Decl.Index) Decl.Type {
+    const file = mod.decls.items(.file)[@intFromEnum(decl)];
+    const ast = mod.files.items(.ast)[@intFromEnum(file)];
+    const node = mod.decls.items(.node)[@intFromEnum(decl)];
+    const ast_tags = ast.nodes.items(.tag);
+    switch (ast_tags[node]) {
+        .root => {
+            const has_fields = for (ast.rootDecls()) |d| {
+                switch (ast_tags[d]) {
+                    .container_field_init,
+                    .container_field_align,
+                    .container_field,
+                    => break true,
+                    else => {},
+                }
+            } else false;
+            return if (has_fields) .container else .namespace;
+        },
+        .global_var_decl,
+        .local_var_decl,
+        .simple_var_decl,
+        .aligned_var_decl,
+        => {
+            const var_decl = ast.fullVarDecl(node).?;
+            if (var_decl.ast.init_node == 0) return .value;
+
+            var buf: [2]Ast.Node.Index = undefined;
+            if (ast.fullContainerDecl(&buf, var_decl.ast.init_node)) |container| {
+                const has_fields = for (container.ast.members) |d| {
+                    switch (ast_tags[d]) {
+                        .container_field_init,
+                        .container_field_align,
+                        .container_field,
+                        => break true,
+                        else => {},
+                    }
+                } else false;
+                return if (has_fields) .container else .namespace;
+            } else {
+                return .value;
+            }
+        },
+        .fn_proto_simple,
+        .fn_proto_multi,
+        .fn_proto,
+        .fn_decl,
+        => return .function,
+        else => unreachable,
+    }
+}
+
+pub fn declName(mod: Module, decl: Decl.Index) ?[]const u8 {
+    const file = mod.decls.items(.file)[@intFromEnum(decl)];
+    const ast = mod.files.items(.ast)[@intFromEnum(file)];
+    const node = mod.decls.items(.node)[@intFromEnum(decl)];
+    return nodeIdentifier(ast, node);
+}
+
+pub fn declChildren(mod: Module, decl: Decl.Index) []const Decl.Index {
+    const children = mod.decls.items(.children)[@intFromEnum(decl)];
+    if (children == .none) return &.{};
+    const len = mod.extra[@intFromEnum(children)];
+    return @ptrCast(mod.extra[@intFromEnum(children) + 1 ..][0..len]);
 }
 
 const Wip = struct {
@@ -175,7 +249,7 @@ const Wip = struct {
                 const index = try mod.appendDecl(.{
                     .file = file,
                     .node = node,
-                    .extra = undefined,
+                    .children = undefined,
                 });
                 mod.files.items(.root_decl)[@intFromEnum(file)] = index;
 
@@ -188,7 +262,7 @@ const Wip = struct {
                 }
                 mod.scratch.items[scratch_top] = @intCast(mod.scratch.items.len - scratch_top - 1);
                 mod.sortDecls(ast, @ptrCast(mod.scratch.items[scratch_top + 1 ..]));
-                mod.decls.items(.extra)[@intFromEnum(index)] = try mod.encodeScratch(scratch_top);
+                mod.decls.items(.children)[@intFromEnum(index)] = try mod.encodeScratch(scratch_top);
 
                 return index;
             },
@@ -207,7 +281,7 @@ const Wip = struct {
                 const index = try mod.appendDecl(.{
                     .file = file,
                     .node = node,
-                    .extra = undefined,
+                    .children = undefined,
                 });
                 if (var_decl.ast.init_node == 0) return index;
 
@@ -222,7 +296,7 @@ const Wip = struct {
                     }
                     mod.scratch.items[scratch_top] = @intCast(mod.scratch.items.len - scratch_top - 1);
                     mod.sortDecls(ast, @ptrCast(mod.scratch.items[scratch_top + 1 ..]));
-                    mod.decls.items(.extra)[@intFromEnum(index)] = try mod.encodeScratch(scratch_top);
+                    mod.decls.items(.children)[@intFromEnum(index)] = try mod.encodeScratch(scratch_top);
                 }
 
                 return index;
@@ -242,7 +316,7 @@ const Wip = struct {
                 return try mod.appendDecl(.{
                     .file = file,
                     .node = node,
-                    .extra = undefined,
+                    .children = .none,
                 });
             },
             else => return null,
@@ -253,27 +327,6 @@ const Wip = struct {
         const index: Decl.Index = @enumFromInt(@as(u32, @intCast(mod.decls.len)));
         try mod.decls.append(mod.allocator, decl);
         return index;
-    }
-
-    fn nodeIdentifier(ast: Ast, node: Ast.Node.Index) ?[]const u8 {
-        const name_token = switch (ast.nodes.items(.tag)[node]) {
-            .global_var_decl,
-            .local_var_decl,
-            .simple_var_decl,
-            .aligned_var_decl,
-            .fn_proto_simple,
-            .fn_proto_multi,
-            .fn_proto_one,
-            .fn_proto,
-            => ast.nodes.items(.main_token)[node] + 1,
-            .fn_decl => token: {
-                const fn_proto = ast.nodes.items(.data)[node].lhs;
-                break :token ast.nodes.items(.main_token)[fn_proto] + 1;
-            },
-            else => return null,
-        };
-        assert(ast.tokens.items(.tag)[name_token] == .identifier);
-        return ast.tokenSlice(name_token);
     }
 
     fn sortDecls(mod: *Wip, ast: Ast, decl_indexes: []Decl.Index) void {
@@ -297,3 +350,24 @@ const Wip = struct {
         return index;
     }
 };
+
+fn nodeIdentifier(ast: Ast, node: Ast.Node.Index) ?[]const u8 {
+    const name_token = switch (ast.nodes.items(.tag)[node]) {
+        .global_var_decl,
+        .local_var_decl,
+        .simple_var_decl,
+        .aligned_var_decl,
+        .fn_proto_simple,
+        .fn_proto_multi,
+        .fn_proto_one,
+        .fn_proto,
+        => ast.nodes.items(.main_token)[node] + 1,
+        .fn_decl => token: {
+            const fn_proto = ast.nodes.items(.data)[node].lhs;
+            break :token ast.nodes.items(.main_token)[fn_proto] + 1;
+        },
+        else => return null,
+    };
+    assert(ast.tokens.items(.tag)[name_token] == .identifier);
+    return ast.tokenSlice(name_token);
+}

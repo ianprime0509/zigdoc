@@ -41,3 +41,7 @@ const mod = await execute({
 console.log(mod);
 
 console.log(await execute({ method: "fileSource", params: { mod, file: 0 } }));
+
+console.log(
+  await execute({ method: "declChildren", params: { mod, decl: 0 } }),
+);

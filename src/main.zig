@@ -107,11 +107,14 @@ fn declChildrenImpl(mod: ModuleIndex, decl: Module.Decl.Index) ![]const u8 {
     try json_writer.beginArray();
     for (m.declChildren(decl)) |child| {
         if (!m.declPublic(child)) continue;
+        const resolved_child = m.declResolveSelfFull(child);
         try json_writer.beginObject();
         try json_writer.objectField("index");
         try json_writer.write(@intFromEnum(child));
+        try json_writer.objectField("resolvedIndex");
+        try json_writer.write(@intFromEnum(resolved_child));
         try json_writer.objectField("type");
-        try json_writer.write(m.declType(child));
+        try json_writer.write(m.declType(resolved_child));
         try json_writer.objectField("name");
         try json_writer.write(m.declName(child));
         try json_writer.endObject();

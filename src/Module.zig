@@ -177,6 +177,7 @@ pub fn declChildren(mod: Module, decl: Decl.Index) []const Decl.Index {
     return @ptrCast(mod.extra[@intFromEnum(children) + 1 ..][0..len]);
 }
 
+/// Looks up a child of `decl` by name.
 pub fn declChild(mod: Module, decl: Decl.Index, name: []const u8) ?Decl.Index {
     const file = mod.decls.items(.file)[@intFromEnum(decl)];
     const ast = mod.files.items(.ast)[@intFromEnum(file)];
@@ -194,14 +195,72 @@ pub fn declChild(mod: Module, decl: Decl.Index, name: []const u8) ?Decl.Index {
     return children[index];
 }
 
+/// Resolves a name in the context of `decl` (that is, looks it up in any parent
+/// scope).
 pub fn declResolve(mod: Module, decl: Decl.Index, name: []const u8) ?Decl.Index {
     const parents = mod.decls.items(.parent);
-    var current_decl = decl;
+    var current_decl = parents[@intFromEnum(decl)];
     while (true) {
         if (mod.declChild(current_decl, name)) |child| return child;
         const parent = parents[@intFromEnum(decl)];
         if (parent == current_decl) return null;
         current_decl = parent;
+    }
+}
+
+/// Resolves the value of `node` within `ast` to a decl. The resolution starts
+/// in the context (parent) of `decl`.
+pub fn declResolveNode(mod: Module, decl: Decl.Index, ast: Ast, node: Ast.Node.Index) ?Decl.Index {
+    switch (ast.nodes.items(.tag)[node]) {
+        .identifier => {
+            const name = ast.tokenSlice(ast.nodes.items(.main_token)[node]);
+            const resolved = mod.declResolve(decl, name) orelse return null;
+            return mod.declResolveSelfFull(resolved);
+        },
+        .builtin_call_two, .builtin_call_two_comma => {
+            const file = mod.decls.items(.file)[@intFromEnum(decl)];
+            const imports = mod.files.items(.imports)[@intFromEnum(file)];
+            const imported_file = imports.get(node) orelse return null;
+            return mod.files.items(.root_decl)[@intFromEnum(imported_file)];
+        },
+        .field_access => {
+            const data = ast.nodes.items(.data)[node];
+            const lhs_resolved = mod.declResolveNode(decl, ast, data.lhs) orelse return null;
+            const rhs_name = ast.tokenSlice(data.rhs);
+            const resolved = mod.declChild(lhs_resolved, rhs_name) orelse return null;
+            return mod.declResolveSelfFull(resolved);
+        },
+        else => return null,
+    }
+}
+
+/// A shortcut for `declResolveNode` when the node to be resolved is the
+/// initialization expression of `decl`.
+pub fn declResolveSelf(mod: Module, decl: Decl.Index) ?Decl.Index {
+    const file = mod.decls.items(.file)[@intFromEnum(decl)];
+    const ast = mod.files.items(.ast)[@intFromEnum(file)];
+    const node = mod.decls.items(.node)[@intFromEnum(decl)];
+    switch (ast.nodes.items(.tag)[node]) {
+        .global_var_decl,
+        .local_var_decl,
+        .simple_var_decl,
+        .aligned_var_decl,
+        => {
+            const var_decl = ast.fullVarDecl(node).?;
+            if (var_decl.ast.init_node == 0) return null;
+            return mod.declResolveNode(decl, ast, var_decl.ast.init_node);
+        },
+        else => return null,
+    }
+}
+
+/// Repeatedly calls `declResolveSelf` until no further resolution is possible,
+/// returning the last resolved decl.
+pub fn declResolveSelfFull(mod: Module, decl: Decl.Index) Decl.Index {
+    var current = decl;
+    while (true) {
+        const resolved = mod.declResolveSelf(current);
+        current = resolved orelse return current;
     }
 }
 

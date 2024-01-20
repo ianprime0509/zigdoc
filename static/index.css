@@ -1,0 +1,77 @@
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+:root {
+  --theme-color: #f7a41d; /* 46.0, 96.9, 73.8 */
+
+  /* TODO: come up with an actually good color scheme */
+  --base00: #feeee2;
+  --base01: #fedcc2;
+  --base02: #fecb9e;
+  --base03: #feb96e;
+  --base04: #543504;
+  --base05: #372101;
+  --base06: #291801;
+  --base07: #1b0e00;
+  --base08: #fd98ac;
+  --base09: #f7a41d;
+  --base0a: #b3be1d;
+  --base0b: #1dd067;
+  --base0c: #20cabd;
+  --base0d: #22c4f3;
+  --base0e: #b8abfd;
+  --base0f: #fd8eec;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --base07: #feeee2;
+    --base06: #fedcc2;
+    --base05: #fecb9e;
+    --base04: #feb96e;
+    --base03: #543504;
+    --base02: #372101;
+    --base01: #291801;
+    --base00: #1b0e00;
+  }
+}
+
+body {
+  height: 100%;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+
+  background-color: var(--base00);
+  color: var(--base05);
+}
+
+nav {
+  position: sticky;
+  top: 0;
+
+  display: flex;
+  justify-content: center;
+  align-items: center;
+
+  min-height: 3rem;
+  width: 100%;
+
+  background-color: var(--base01);
+}
+
+input[type="search"] {
+  height: 2rem;
+  min-width: min(90%, 50ch);
+
+  background-color: var(--base00);
+  color: inherit;
+  border: none;
+}
+
+main {
+  padding: 1rem 1rem 0 1rem;
+}

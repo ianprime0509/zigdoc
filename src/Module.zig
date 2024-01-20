@@ -3,6 +3,7 @@ const mem = std.mem;
 const Allocator = mem.Allocator;
 const Ast = std.zig.Ast;
 const assert = std.debug.assert;
+const markdown = @import("markdown.zig");
 
 files: File.List.Slice,
 root_file: File.Index,
@@ -45,6 +46,10 @@ pub const File = struct {
     source: [:0]u8,
     ast: Ast,
     root_decl: Decl.Index,
+    /// A map of `@import` builtin call nodes in `ast` to the files they import.
+    ///
+    /// Mapping the nodes directly to files avoids the need to check and process
+    /// the `@import` builtin calls every time a lookup is required.
     imports: std.AutoHashMapUnmanaged(Ast.Node.Index, File.Index),
 
     pub const Index = enum(u32) { _ };
@@ -75,10 +80,10 @@ pub const Decl = struct {
     pub const List = std.MultiArrayList(Decl);
 
     pub const Type = enum {
-        value,
         namespace,
         container,
         function,
+        value,
     };
 };
 
@@ -168,6 +173,154 @@ pub fn declName(mod: Module, decl: Decl.Index) ?[]const u8 {
     const ast = mod.files.items(.ast)[@intFromEnum(file)];
     const node = mod.decls.items(.node)[@intFromEnum(decl)];
     return nodeIdentifier(ast, node);
+}
+
+pub fn declHasDoc(mod: Module, decl: Decl.Index) bool {
+    const file = mod.decls.items(.file)[@intFromEnum(decl)];
+    const ast = mod.files.items(.ast)[@intFromEnum(file)];
+    const node = mod.decls.items(.node)[@intFromEnum(decl)];
+    const token_tags = ast.tokens.items(.tag);
+
+    switch (ast.nodes.items(.tag)[node]) {
+        .root => return token_tags[0] == .container_doc_comment,
+        .global_var_decl,
+        .local_var_decl,
+        .simple_var_decl,
+        .aligned_var_decl,
+        .fn_proto_simple,
+        .fn_proto_multi,
+        .fn_proto,
+        .fn_decl,
+        => {
+            const first_token: Ast.TokenIndex = ast.firstToken(node);
+            return first_token > 0 and token_tags[first_token - 1] == .doc_comment;
+        },
+        else => unreachable,
+    }
+}
+
+/// Writes rendered documentation for `decl` to `writer`.
+///
+/// The documentation rendered is only that provided in doc comments directly
+/// associated with `decl`. References to other decls are not followed.
+pub fn declDoc(mod: Module, allocator: Allocator, decl: Decl.Index, writer: anytype) (Allocator.Error || @TypeOf(writer).Error)!void {
+    const file = mod.decls.items(.file)[@intFromEnum(decl)];
+    const ast = mod.files.items(.ast)[@intFromEnum(file)];
+    const node = mod.decls.items(.node)[@intFromEnum(decl)];
+    const token_tags = ast.tokens.items(.tag);
+
+    var parser = try markdown.Parser.init(allocator);
+    defer parser.deinit();
+    switch (ast.nodes.items(.tag)[node]) {
+        .root => {
+            var token: Ast.TokenIndex = 0;
+            while (token_tags[token] == .container_doc_comment) : (token += 1) {
+                const contents = ast.tokenSlice(token)["//!".len..];
+                try parser.feedLine(contents);
+            }
+        },
+        .global_var_decl,
+        .local_var_decl,
+        .simple_var_decl,
+        .aligned_var_decl,
+        .fn_proto_simple,
+        .fn_proto_multi,
+        .fn_proto,
+        .fn_decl,
+        => {
+            var token = ast.firstToken(node);
+            while (token > 0 and token_tags[token - 1] == .doc_comment) {
+                token -= 1;
+            }
+            while (token_tags[token] == .doc_comment) : (token += 1) {
+                const contents = ast.tokenSlice(token)["///".len..];
+                try parser.feedLine(contents);
+            }
+        },
+        else => unreachable,
+    }
+
+    var doc = try parser.endInput();
+    defer doc.deinit(allocator);
+    try doc.render(writer);
+}
+
+/// Like `declDoc`, but renders only the documentation summary (the
+/// documentation up to and including the first period followed by some form of
+/// space).
+pub fn declDocSummary(
+    mod: Module,
+    allocator: Allocator,
+    decl: Decl.Index,
+    writer: anytype,
+) (Allocator.Error || @TypeOf(writer).Error)!void {
+    const file = mod.decls.items(.file)[@intFromEnum(decl)];
+    const ast = mod.files.items(.ast)[@intFromEnum(file)];
+    const node = mod.decls.items(.node)[@intFromEnum(decl)];
+    const token_tags = ast.tokens.items(.tag);
+
+    var parser = try markdown.Parser.init(allocator);
+    defer parser.deinit();
+    switch (ast.nodes.items(.tag)[node]) {
+        .root => {
+            var token: Ast.TokenIndex = 0;
+            while (token_tags[token] == .container_doc_comment) : (token += 1) {
+                const contents = ast.tokenSlice(token)["//!".len..];
+                if (indexOfSummaryEnd(contents)) |end| {
+                    try parser.feedLineInline(contents[0..end]);
+                    break;
+                } else {
+                    try parser.feedLineInline(contents);
+                }
+            }
+        },
+        .global_var_decl,
+        .local_var_decl,
+        .simple_var_decl,
+        .aligned_var_decl,
+        .fn_proto_simple,
+        .fn_proto_multi,
+        .fn_proto,
+        .fn_decl,
+        => {
+            var token: Ast.TokenIndex = ast.firstToken(node);
+            while (token > 0 and token_tags[token - 1] == .doc_comment) {
+                token -= 1;
+            }
+            while (token_tags[token] == .doc_comment) : (token += 1) {
+                const contents = ast.tokenSlice(token)["///".len..];
+                if (indexOfSummaryEnd(contents)) |end| {
+                    try parser.feedLineInline(contents[0..end]);
+                    break;
+                } else {
+                    try parser.feedLineInline(contents);
+                }
+            }
+        },
+        else => unreachable,
+    }
+
+    var document = try parser.endInput();
+    defer document.deinit(allocator);
+    try document.render(writer);
+}
+
+/// Substrings that might look like the end of a sentence, but aren't.
+const false_summary_ends: []const []const u8 = &.{
+    "e.g.",
+    "i.e.",
+};
+
+fn indexOfSummaryEnd(line: []const u8) ?usize {
+    var start: usize = 0;
+    return while (mem.indexOfScalarPos(u8, line, start, '.')) |index| {
+        if (index == line.len - 1 or std.ascii.isWhitespace(line[index + 1])) {
+            for (false_summary_ends) |false_summary_end| {
+                if (mem.endsWith(u8, line[0 .. index + 1], false_summary_end)) break;
+            } else break index + 1;
+        }
+        start = index + 1;
+    } else null;
 }
 
 pub fn declChildren(mod: Module, decl: Decl.Index) []const Decl.Index {

@@ -2,8 +2,36 @@
 <html lang="en">
   <head>
     <title>Zigdoc</title>
+    <link rel="stylesheet" href="index.css" />
   </head>
   <body>
+    <nav>
+      <input id="search" type="search" />
+    </nav>
+    <main>
+      <h1 id="decl-title">std</h1>
+      <div id="decl-doc"></div>
+
+      <section id="decl-namespaces-section">
+        <h2>Namespaces</h2>
+        <ul id="decl-namespaces"></ul>
+      </section>
+
+      <section id="decl-types-section">
+        <h2>Types</h2>
+        <ul id="decl-types"></ul>
+      </section>
+
+      <section id="decl-functions-section">
+        <h2>Functions</h2>
+        <ul id="decl-functions"></ul>
+      </section>
+
+      <section id="decl-values-section">
+        <h2>Values</h2>
+        <ul id="decl-values"></ul>
+      </section>
+    </main>
     <script src="index.js" type="module"></script>
   </body>
 </html>

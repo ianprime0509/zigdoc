@@ -116,6 +116,10 @@ const methods = {
     );
   },
 
+  declFile({ mod, decl }) {
+    return handle(wasm.declFile(mod, decl));
+  },
+
   declChildren({ mod, decl }) {
     const jsonPtr = new clientMemory.OutValue(4);
     const jsonLen = new clientMemory.OutValue(4);

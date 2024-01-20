@@ -85,6 +85,11 @@ export fn fileSource(
     return 0;
 }
 
+export fn declFile(mod: ModuleIndex, decl: Module.Decl.Index) i32 {
+    const m = modules.items[@intFromEnum(mod)];
+    return @intCast(@intFromEnum(m.decls.items(.file)[@intFromEnum(decl)]));
+}
+
 export fn declChildren(
     mod: ModuleIndex,
     decl: Module.Decl.Index,
@@ -105,9 +110,23 @@ fn declChildrenImpl(mod: ModuleIndex, decl: Module.Decl.Index) ![]const u8 {
 
     var json_writer = std.json.writeStream(json.writer(), .{});
     try json_writer.beginArray();
+    var doc_buffer = std.ArrayList(u8).init(allocator);
+    defer doc_buffer.deinit();
     for (m.declChildren(decl)) |child| {
         if (!m.declPublic(child)) continue;
-        const resolved_child = m.declResolveSelfFull(child);
+
+        doc_buffer.clearRetainingCapacity();
+        var found_docs = false;
+        var resolved_child = child;
+        while (true) {
+            if (!found_docs and m.declHasDoc(resolved_child)) {
+                try m.declDocSummary(allocator, resolved_child, doc_buffer.writer());
+                found_docs = true;
+            }
+            const resolved = m.declResolveSelf(resolved_child);
+            resolved_child = resolved orelse break;
+        }
+
         try json_writer.beginObject();
         try json_writer.objectField("index");
         try json_writer.write(@intFromEnum(child));
@@ -117,6 +136,8 @@ fn declChildrenImpl(mod: ModuleIndex, decl: Module.Decl.Index) ![]const u8 {
         try json_writer.write(m.declType(resolved_child));
         try json_writer.objectField("name");
         try json_writer.write(m.declName(child));
+        try json_writer.objectField("doc");
+        try json_writer.write(doc_buffer.items);
         try json_writer.endObject();
     }
     try json_writer.endArray();

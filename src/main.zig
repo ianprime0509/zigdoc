@@ -148,12 +148,13 @@ fn declChildrenImpl(mod: ModuleIndex, decl: Module.Decl.Index) ![]const u8 {
 export fn declChild(
     mod: ModuleIndex,
     decl: Module.Decl.Index,
-    child_ptr: [*]const u8,
-    child_len: usize,
+    name_ptr: [*]const u8,
+    name_len: usize,
 ) i32 {
-    const child = child_ptr[0..child_len];
-    const index = modules.items[@intFromEnum(mod)].declChild(decl, child) orelse return missing_index;
-    return @intCast(@intFromEnum(index));
+    const m = modules.items[@intFromEnum(mod)];
+    const name = name_ptr[0..name_len];
+    const index = m.declChild(decl, name) orelse return missing_index;
+    return @intCast(@intFromEnum(m.declResolveSelfFull(index)));
 }
 
 /// Returns a negative error code corresponding to `err`.

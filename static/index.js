@@ -38,6 +38,11 @@ const std = await execute({
   method: "addModule",
   params: { rootPath: "std.zig", sourceTarGz },
 });
+const stdRootFile = await execute({ method: "rootFile", params: { mod: std } });
+const stdRootDecl = await execute({
+  method: "rootDecl",
+  params: { mod: std, file: stdRootFile },
+});
 
 const declTitle = document.getElementById("decl-title");
 const declDoc = document.getElementById("decl-doc");
@@ -53,21 +58,31 @@ const declValuesSection = document.getElementById("decl-values-section");
 const declValues = document.getElementById("decl-values");
 
 if (window.location.hash === "") {
-  window.location.hash = "#doc/std";
+  window.location.hash = "#doc:std";
 }
 
-await navigateTo(window.location.hash.slice(1));
+await navigateToCurrent();
+
+addEventListener("hashchange", () => navigateToCurrent());
+
+async function navigateToCurrent() {
+  await navigateTo(window.location.hash.slice(1));
+}
 
 async function navigateTo(loc) {
-  if (loc.startsWith("doc/")) {
-    const path = loc.slice("doc/".length);
+  if (loc.startsWith("doc:")) {
+    const path = loc.slice("doc:".length);
     declTitle.innerText = path;
-    // TODO
-    const file = await execute({ method: "rootFile", params: { mod: std } });
-    const decl = await execute({
-      method: "rootDecl",
-      params: { mod: std, file },
-    });
+    let decl = stdRootDecl;
+    // TODO: handle other modules
+    for (const item of path.split(".").slice(1)) {
+      decl = await execute({
+        method: "declChild",
+        params: { mod: std, decl, name: item },
+      });
+    }
+    if (decl === null) return; // TODO
+
     const children = await execute({
       method: "declChildren",
       params: { mod: std, decl },
@@ -79,7 +94,8 @@ async function navigateTo(loc) {
     declValues.innerHTML = "";
     for (const child of children) {
       const childItem = document.createElement("li");
-      const childTitle = document.createElement("label");
+      const childTitle = document.createElement("a");
+      childTitle.href = "#doc:" + path + "." + child.name;
       childTitle.innerText = child.name;
       childTitle.style = "font-weight: bold; margin-right: 1rem";
       childItem.appendChild(childTitle);
@@ -104,29 +120,6 @@ async function navigateTo(loc) {
     }
   }
 }
-
-const file = await execute({ method: "rootFile", params: { mod: std } });
-
-console.log(
-  await execute({ method: "fileSource", params: { mod: std, file } }),
-);
-
-const decl = await execute({ method: "rootDecl", params: { mod: std, file } });
-
-console.log(
-  await execute({ method: "declChildren", params: { mod: std, decl } }),
-);
-
-const mem = await execute({
-  method: "declChild",
-  params: { mod: std, decl, name: "mem" },
-});
-
-console.log(mem);
-
-console.log(
-  await execute({ method: "declChildren", params: { mod: std, decl: mem } }),
-);
 
 // For debugging purposes, it is useful to have the execute function available
 // for use from the browser console.
